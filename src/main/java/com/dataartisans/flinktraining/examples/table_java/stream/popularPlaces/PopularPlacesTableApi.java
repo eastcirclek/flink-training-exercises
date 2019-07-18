@@ -16,6 +16,7 @@
 
 package com.dataartisans.flinktraining.examples.table_java.stream.popularPlaces;
 
+import com.dataartisans.flinktraining.exercises.datastream_java.utils.ExerciseBase;
 import com.dataartisans.flinktraining.exercises.datastream_java.utils.GeoUtils;
 import com.dataartisans.flinktraining.examples.table_java.sources.TaxiRideTableSource;
 import org.apache.flink.api.java.utils.ParameterTool;
@@ -33,7 +34,7 @@ public class PopularPlacesTableApi {
 
 		// read parameters
 		ParameterTool params = ParameterTool.fromArgs(args);
-		String input = params.getRequired("input");
+		String input = params.get("input", ExerciseBase.pathToRideData);
 
 		final int maxEventDelay = 60;       // events are out of order by max 60 seconds
 		final int servingSpeedFactor = 600; // events of 10 minutes are served in 1 second
