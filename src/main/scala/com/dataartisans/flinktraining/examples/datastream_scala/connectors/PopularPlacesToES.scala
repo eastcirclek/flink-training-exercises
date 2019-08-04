@@ -22,14 +22,16 @@ import java.util
 import com.dataartisans.flinktraining.exercises.datastream_java.datatypes.TaxiRide
 import com.dataartisans.flinktraining.exercises.datastream_java.sources.TaxiRideSource
 import com.dataartisans.flinktraining.exercises.datastream_java.utils.GeoUtils
-import org.apache.flink.api.common.functions.{RuntimeContext, MapFunction}
+import org.apache.flink.api.common.functions.{MapFunction, RuntimeContext}
 import org.apache.flink.api.java.utils.ParameterTool
 import org.apache.flink.streaming.api.scala._
 import org.apache.flink.streaming.api.TimeCharacteristic
 import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
 import org.apache.flink.streaming.api.windowing.time.Time
-import org.apache.flink.streaming.connectors.elasticsearch2._
+import org.apache.flink.streaming.connectors.elasticsearch.{ElasticsearchSinkFunction, RequestIndexer}
+import org.apache.flink.streaming.connectors.elasticsearch6._
 import org.apache.flink.util.Collector
+import org.apache.http.HttpHost
 import org.elasticsearch.action.index.IndexRequest
 import org.elasticsearch.client.Requests
 
@@ -84,20 +86,13 @@ object PopularPlacesToES {
       // map grid cell to coordinates
       .map(new GridToCoordinates)
 
-    val config = Map(
-      // This instructs the sink to emit after every element, otherwise they would be buffered
-      "bulk.flush.max.actions" -> "10",
-      // default cluster name
-      "cluster.name" -> "elasticsearch"
-    )
-    val jConfig: java.util.Map[String, String] = new java.util.HashMap()
-    jConfig.putAll(config.asJava)
-
-    val transports = List(new InetSocketAddress(InetAddress.getByName("localhost"), 9300))
+    val transports = List(new HttpHost("localhost", 9300))
     val jTransports = new util.ArrayList(transports.asJava)
 
-    popularPlaces.addSink(
-      new ElasticsearchSink(jConfig, jTransports, new PopularPlaceInserter))
+    val esSinkBuilder = new ElasticsearchSink.Builder(jTransports, new PopularPlaceInserter)
+    esSinkBuilder.setBulkFlushMaxActions(10)
+
+    popularPlaces.addSink(esSinkBuilder.build())
 
     // execute the transformation pipeline
     env.execute("Popular Places to Elasticsearch")

@@ -35,8 +35,9 @@ import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.connectors.elasticsearch.ElasticsearchSinkFunction;
 import org.apache.flink.streaming.connectors.elasticsearch.RequestIndexer;
-import org.apache.flink.streaming.connectors.elasticsearch2.ElasticsearchSink;
+import org.apache.flink.streaming.connectors.elasticsearch6.ElasticsearchSink;
 import org.apache.flink.util.Collector;
+import org.apache.http.HttpHost;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.client.Requests;
 
@@ -96,18 +97,12 @@ public class PopularPlacesToES {
 		 		// map grid cell to coordinates
 				.map(new GridToCoordinates());
 
-		Map<String, String> config = new HashMap<>();
-		// This instructs the sink to emit after every element, otherwise they would be buffered
-		config.put("bulk.flush.max.actions", "10");
-		config.put("cluster.name", "elasticsearch");
+		List<HttpHost> transports = new ArrayList<>();
+		transports.add(new HttpHost("localhost", 9300));
 
-		List<InetSocketAddress> transports = new ArrayList<>();
-		transports.add(new InetSocketAddress(InetAddress.getByName("localhost"), 9300));
-
-		popularPlaces.addSink(new ElasticsearchSink<>(
-				config,
-				transports,
-				new PopularPlaceInserter()));
+		ElasticsearchSink.Builder elaticSearchSinkBuilder = new ElasticsearchSink.Builder(transports, new PopularPlaceInserter());
+		elaticSearchSinkBuilder.setBulkFlushMaxActions(10);
+		popularPlaces.addSink(elaticSearchSinkBuilder.build());
 
 		// execute the transformation pipeline
 		env.execute("Popular Places to Elasticsearch");

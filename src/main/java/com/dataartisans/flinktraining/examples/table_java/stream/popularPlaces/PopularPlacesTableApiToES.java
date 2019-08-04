@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 data Artisans GmbH
+ * Copyright 2015 data Artisans GmbH
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,10 +24,14 @@ import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.java.Slide;
 import org.apache.flink.table.api.java.StreamTableEnvironment;
+import org.apache.flink.table.descriptors.*;
 import org.apache.flink.types.Row;
 
-public class PopularPlacesSql2 {
+import static org.apache.flink.api.common.typeinfo.Types.*;
+
+public class PopularPlacesTableApiToES {
 
 	public static void main(String[] args) throws Exception {
 
@@ -58,42 +62,50 @@ public class PopularPlacesSql2 {
 		tEnv.registerFunction("toCellId", new GeoUtils.ToCellId());
 		tEnv.registerFunction("toCoords", new GeoUtils.ToCoords());
 
-		Table taxiRidesByCell = tEnv.sqlQuery(
-		  "SELECT " +
-        "eventTime, " +
-        "isStart, " +
-        "CASE WHEN isStart THEN toCellId(startLon, startLat) ELSE toCellId(endLon, endLat) END AS cell " +
-      "FROM " +
-        "TaxiRides " +
-      "WHERE " +
-        "isInNYC(startLon, startLat) AND isInNYC(endLon, endLat)"
-    );
-    tEnv.registerTable("taxiRidesByCell", taxiRidesByCell);
+		Table popPlaces = tEnv
+				// scan TaxiRides table
+				.scan("TaxiRides")
+				// filter for valid rides
+				.filter("isInNYC(startLon, startLat) && isInNYC(endLon, endLat)")
+				// select fields and compute grid cell of departure or arrival coordinates
+				.select("eventTime, " +
+						"isStart, " +
+						"(isStart = true).?(toCellId(startLon, startLat), toCellId(endLon, endLat)) AS cell")
+				// specify sliding window over 15 minutes with slide of 5 minutes
+				.window(Slide.over("15.minutes").every("5.minutes").on("eventTime").as("w"))
+				// group by cell, isStart, and window
+				.groupBy("cell, isStart, w")
+				// count departures and arrivals per cell (location) and window (time)
+				.select("cell, isStart, w.start AS start, w.end AS end, count(isStart) AS popCnt")
+				// filter for popular places
+				.filter("popCnt > 20")
+				// convert cell back to coordinates
+				.select("toCoords(cell).flatten, start, end, isStart, popCnt");
 
-    Table windowedCounts = tEnv.sqlQuery(
-      "SELECT " +
-        "cell, " +
-        "isStart, " +
-        "HOP_START(eventTime, INTERVAL '5' MINUTE, INTERVAL '15' MINUTE) AS wstart, " +
-        "HOP_END(eventTime, INTERVAL '5' MINUTE, INTERVAL '15' MINUTE) AS wend, " +
-        "COUNT(isStart) AS popCnt " +
-      "FROM " +
-        "taxiRidesByCell " +
-      "GROUP BY cell, isStart, HOP(eventTime, INTERVAL '5' MINUTE, INTERVAL '15' MINUTE)"
-    );
-    tEnv.registerTable("windowedCounts", windowedCounts);
+		ConnectorDescriptor connectorDescriptor = new Elasticsearch()
+			.version("7")
+			.host("localhost", 9200, "http")
+			.index("nyc-places")
+			.documentType("");
 
-    Table results = tEnv.sqlQuery(
-			"SELECT " +
-				"toCoords(cell), wstart, wend, isStart, popCnt " +
-			"FROM " +
-        "windowedCounts " +
-      "WHERE popCnt > 20"
-    );
+		FormatDescriptor formatDescriptor = new Json()
+			.deriveSchema();
 
-		// convert Table into an append stream and print it
-		// (if instead we needed a retraction stream we would use tEnv.toRetractStream)
-		tEnv.toAppendStream(results, Row.class).print();
+		Schema schemaDescriptor = new Schema()
+			.field("lon", FLOAT)
+			.field("lat", FLOAT)
+			.field("start", SQL_TIMESTAMP)
+			.field("end", SQL_TIMESTAMP)
+			.field("isStart", BOOLEAN)
+			.field("popCnt", LONG);
+
+		tEnv.connect(connectorDescriptor)
+			.withFormat(formatDescriptor)
+			.withSchema(schemaDescriptor)
+			.inAppendMode()
+			.registerTableSink("esOutput");
+
+		popPlaces.insertInto("esOutput");
 
 		// execute query
 		env.execute();
